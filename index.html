@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Paper Territory 2 — Online Multiplayer</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#081426;color:#fff;font-family:Arial,sans-serif}
+#game{display:block;width:100vw;height:100vh;background:#101f38;touch-action:none}
+#hud{position:fixed;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center;gap:7px;pointer-events:none;text-shadow:0 2px 5px #000;flex-wrap:wrap}
+.pill{background:#07101dcc;border:1px solid #ffffff30;border-radius:12px;padding:7px 10px;font-weight:bold;font-size:clamp(11px,1.8vw,16px)}
+#menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#061020dd;padding:14px;z-index:10}
+.panel{width:min(540px,96vw);max-height:94vh;overflow:auto;text-align:center;background:linear-gradient(145deg,#142c4d,#09172b);border:1px solid #ffffff35;border-radius:22px;padding:22px;box-shadow:0 15px 55px #0009}
+h1{margin:0 0 8px;font-size:clamp(27px,6vw,43px);color:#55e6ff}p{line-height:1.45;color:#d8e6f7}
+input{width:min(100%,330px);padding:12px;margin:5px;border-radius:10px;border:1px solid #ffffff55;background:#071426;color:#fff;font-size:17px}
+button{border:0;border-radius:12px;padding:12px 18px;background:#12c8e8;color:#001521;font-size:17px;font-weight:900;cursor:pointer;margin:4px}
+.secondary{background:#ffe45c} .small{font-size:12px;color:#a9bdd5}
+#controls{position:fixed;right:14px;bottom:14px;display:grid;grid-template-columns:54px 54px 54px;grid-template-rows:46px 46px 46px;gap:4px;z-index:3}
+#controls button{margin:0;padding:0;background:#0a203acc;color:white;border:1px solid #ffffff55;font-size:22px;border-radius:12px;touch-action:none}
+#controls .up{grid-column:2}.left{grid-column:1;grid-row:2}.down{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}
+#modeButtons{position:fixed;top:64px;left:50%;transform:translateX(-50%);display:flex;gap:5px;z-index:4}
+#modeButtons button{font-size:13px;padding:8px 12px;border:1px solid #ffffff55}
+#status{position:fixed;left:10px;bottom:12px;max-width:60vw}
+#leader{position:fixed;right:12px;top:90px;background:#07101dcc;border:1px solid #ffffff30;border-radius:12px;padding:8px 10px;font-size:12px;max-width:150px}
+@media(min-width:850px){#controls{transform:scale(1.05);transform-origin:bottom right}}
+</style></head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud"><div class="pill">🌐 PAPER TERRITORY 2 ONLINE</div><div class="pill">आपका इलाका: <span id="score">0</span>%</div><div class="pill">रूम: <span id="roomLabel">—</span></div><div class="pill">खिलाड़ी: <span id="count">0</span></div></div>
+<div id="modeButtons"><button id="phoneMode" class="secondary">📱 फोन</button><button id="tvMode">📺 TV</button></div>
+<div id="leader"></div><div id="status" class="pill">सर्वर से कनेक्ट हो रहा है…</div>
+<div id="controls"><button class="up" data-dir="up">▲</button><button class="left" data-dir="left">◀</button><button class="down" data-dir="down">▼</button><button class="right" data-dir="right">▶</button></div>
+<div id="menu"><div class="panel"><h1>PAPER TERRITORY 2</h1><p><b>अब ऑनलाइन मल्टीप्लेयर!</b><br>दोस्तों के साथ एक ही रूम में खेलें। बाहर रास्ता बनाकर अपनी जमीन पर लौटें और इलाका बढ़ाएँ।</p>
+<input id="name" maxlength="16" placeholder="अपना खिलाड़ी नाम" value="Player">
+<input id="room" maxlength="8" placeholder="रूम कोड (जैसे ABC123)">
+<div><button id="join">🌐 ऑनलाइन खेलें</button><button id="quick" class="secondary">रैंडम रूम</button></div>
+<p class="small">दोस्तों को वही रूम कोड दें। सभी खिलाड़ियों को एक ही वेबसाइट लिंक खोलना होगा।</p>
+<p class="small">TV: रिमोट के तीर और OK/Enter · कंप्यूटर: Arrow keys / WASD</p></div></div>
+<script>
+(()=>{
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const W=42,H=26;let cell=20,ox=0,oy=0,state=null,myId=null,playMode='phone',socket=null,joined=false;
+const $=id=>document.getElementById(id);
+const palette=['#5ce1ff','#ff5470','#ffb347','#c77dff','#65e572','#ff70c8','#4de1d2','#e8e85a','#ff835c','#8bb4ff','#d0f05a','#ffa7c4'];
+function resize(){canvas.width=innerWidth*devicePixelRatio;canvas.height=innerHeight*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);cell=Math.min(innerWidth/W,innerHeight/H);ox=(innerWidth-cell*W)/2;oy=(innerHeight-cell*H)/2;draw()}
+addEventListener('resize',resize);
+function idx(x,y){return y*W+x}
+function color(id){return palette[(id-1)%palette.length]||'#5ce1ff'}
+function setStatus(s){$('status').textContent=s}
+function connect(){
+ if(socket)return;
+ socket=io();
+ socket.on('connect',()=>setStatus('सर्वर जुड़ गया — ऑनलाइन खेलने के लिए रूम में जाएँ'));
+ socket.on('connect_error',()=>setStatus('सर्वर उपलब्ध नहीं। पहले इस प्रोजेक्ट को ऑनलाइन होस्ट करें।'));
+ socket.on('joined',data=>{myId=data.id;state=data.state;joined=true;$('menu').style.display='none';$('roomLabel').textContent=data.room;$('status').textContent='ऑनलाइन • दोस्तों को रूम कोड भेजें';draw()});
+ socket.on('state',s=>{state=s;draw()});
+ socket.on('notice',msg=>setStatus(msg));
+ socket.on('disconnect',()=>setStatus('कनेक्शन टूट गया — दोबारा कनेक्ट हो रहा है…'));
+}
+function join(room){connect();let name=$('name').value.trim()||'Player';let code=room||$('room').value.trim().toUpperCase();if(!code)code=Math.random().toString(36).slice(2,8).toUpperCase();$('room').value=code;setStatus('रूम में शामिल हो रहे हैं…');socket.emit('joinRoom',{name,room:code})}
+$('join').onclick=()=>join();$('quick').onclick=()=>join(Math.random().toString(36).slice(2,8).toUpperCase());
+function setMode(m){playMode=m;$('phoneMode').classList.toggle('secondary',m==='phone');$('tvMode').classList.toggle('secondary',m==='tv');$('controls').style.display=m==='phone'?'grid':'none'}
+$('phoneMode').onclick=()=>setMode('phone');$('tvMode').onclick=()=>setMode('tv');
+function change(d){if(socket&&joined)socket.emit('direction',d)}
+document.querySelectorAll('#controls button').forEach(b=>b.addEventListener('pointerdown',e=>{e.preventDefault();change(b.dataset.dir)}));
+document.addEventListener('keydown',e=>{let k=e.key.toLowerCase();if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k))e.preventDefault();
+if(k==='arrowup'||k==='w'||e.keyCode===38)change('up');if(k==='arrowdown'||k==='s'||e.keyCode===40)change('down');if(k==='arrowleft'||k==='a'||e.keyCode===37)change('left');if(k==='arrowright'||k==='d'||e.keyCode===39)change('right');
+if((k==='enter'||k===' ')&&!joined){join()}});
+
+function draw(){
+ ctx.clearRect(0,0,innerWidth,innerHeight);ctx.fillStyle='#101f38';ctx.fillRect(0,0,innerWidth,innerHeight);
+ if(!state){return}
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){let owner=state.territory[idx(x,y)],px=ox+x*cell,py=oy+y*cell;ctx.fillStyle=owner?color(owner):'#172c49';ctx.fillRect(px+.5,py+.5,cell-1,cell-1)}
+ for(const p of Object.values(state.players)){
+   for(const t of p.trail||[]){ctx.globalAlpha=.78;ctx.fillStyle=color(p.owner);ctx.fillRect(ox+t.x*cell+2,oy+t.y*cell+2,cell-4,cell-4)}ctx.globalAlpha=1;
+   ctx.fillStyle=color(p.owner);ctx.beginPath();ctx.arc(ox+(p.x+.5)*cell,oy+(p.y+.5)*cell,cell*.38,0,Math.PI*2);ctx.fill();
+   ctx.strokeStyle=p.id===myId?'#fff':'#111';ctx.lineWidth=p.id===myId?3:1;ctx.stroke();
+   if(cell>12){ctx.fillStyle='#fff';ctx.font=`bold ${Math.max(8,Math.min(11,cell*.42))}px Arial`;ctx.textAlign='center';ctx.fillText(p.name.slice(0,8),ox+(p.x+.5)*cell,oy+(p.y+.5)*cell-cell*.55)}
+ }
+ const me=state.players[myId];if(me){let n=state.territory.filter(v=>v===me.owner).length;$('score').textContent=Math.round(n/(W*H)*100)}
+ $('count').textContent=Object.keys(state.players).length;
+ const rows=Object.values(state.players).sort((a,b)=>b.land-a.land).slice(0,7).map(p=>`<div style="color:${color(p.owner)}">● ${escapeHtml(p.name)} ${p.land||0}%</div>`).join('');
+ $('leader').innerHTML='<b>🏆 खिलाड़ी</b>'+rows;
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+resize();setMode('phone');connect();
+})();
+</script></body></html>
